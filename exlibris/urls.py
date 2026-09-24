@@ -17,11 +17,12 @@ Including another URLconf
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
 
 from library.views import form_assistant
 
 urlpatterns = [
+    path("accounts/", include("allauth.urls")),
     path("admin/assistant/", form_assistant, name="form_assistant"),
     path("admin/", admin.site.urls),
 ]

@@ -28,6 +28,11 @@ ALLOWED_HOSTS = env.list(
 # An empty key disables the form assistant. The admin form still saves.
 GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
 
+GOOGLE_CLIENT_ID = env("GOOGLE_CLIENT_ID", default="")
+GOOGLE_CLIENT_SECRET = env("GOOGLE_CLIENT_SECRET", default="")
+# Both values are required. A half-configured client must not show the button.
+GOOGLE_LOGIN_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -35,6 +40,11 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django.contrib.sites",
+    "allauth",
+    "allauth.account",
+    "allauth.socialaccount",
+    "allauth.socialaccount.providers.google",
     "storages",
     "library",
 ]
@@ -45,22 +55,56 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "allauth.account.middleware.AccountMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
 ROOT_URLCONF = "exlibris.urls"
 
+SITE_ID = 1
+
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "allauth.account.auth_backends.AuthenticationBackend",
+]
+
+LOGIN_REDIRECT_URL = "/admin/"
+# Google already verified the address. A new user should reach the admin
+# without a second confirmation step, and there is no local allauth signup.
+ACCOUNT_EMAIL_VERIFICATION = "none"
+ACCOUNT_LOGIN_METHODS = {"email"}
+ACCOUNT_SIGNUP_FIELDS = ["email*"]
+SOCIALACCOUNT_AUTO_SIGNUP = True
+SOCIALACCOUNT_ONLY = True
+SOCIALACCOUNT_ADAPTER = "library.adapters.StaffSocialAccountAdapter"
+
+google_provider = {
+    "SCOPE": ["openid", "email", "profile"],
+    "AUTH_PARAMS": {"access_type": "online"},
+    "OAUTH_PKCE_ENABLED": True,
+}
+if GOOGLE_LOGIN_ENABLED:
+    google_provider["APPS"] = [
+        {
+            "client_id": GOOGLE_CLIENT_ID,
+            "secret": GOOGLE_CLIENT_SECRET,
+            "key": "",
+        }
+    ]
+SOCIALACCOUNT_PROVIDERS = {"google": google_provider}
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "library.context_processors.google_login",
             ],
         },
     },

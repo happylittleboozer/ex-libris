@@ -3,14 +3,17 @@ from io import BytesIO
 
 from unittest.mock import patch
 
+from allauth.socialaccount.models import SocialAccount, SocialLogin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client, TestCase, override_settings
+from django.test import Client, RequestFactory, TestCase, override_settings
 from django.utils import timezone
 from PIL import Image
 
+from library.adapters import StaffSocialAccountAdapter
 from library.assistant import ASSISTANT_UNAVAILABLE, form_notes
 from library.models import COVER_MAX_BYTES, Author, Book, Loan, Member
 
@@ -418,3 +421,60 @@ class FormAssistantTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertTrue(Book.objects.filter(title="Saved without the assistant").exists())
+
+
+class GoogleLoginTests(TestCase):
+    def test_login_page_offers_google_when_the_client_is_configured(self):
+        with override_settings(GOOGLE_LOGIN_ENABLED=True):
+            response = self.client.get("/admin/login/")
+
+        self.assertContains(response, '<input type="submit" value="Sign in with Google">')
+        self.assertContains(response, 'class="google-login-or"')
+        self.assertContains(response, 'id="google-login-form"')
+        self.assertContains(response, 'action="/accounts/google/login/"')
+        self.assertContains(response, 'id="login-form"')
+
+    def test_login_page_hides_google_without_client_settings(self):
+        with override_settings(GOOGLE_LOGIN_ENABLED=False):
+            response = self.client.get("/admin/login/")
+
+        self.assertNotContains(response, "Sign in with Google")
+        self.assertNotContains(response, 'class="google-login-or"')
+        self.assertContains(response, 'id="login-form"')
+
+    def test_password_login_still_reaches_the_admin(self):
+        get_user_model().objects.create_superuser(
+            "librarian",
+            "librarian@exlibris.test",
+            "password",
+        )
+
+        response = self.client.post(
+            "/admin/login/",
+            {"username": "librarian", "password": "password", "next": "/admin/"},
+        )
+
+        self.assertRedirects(response, "/admin/")
+
+    def test_google_callback_can_verify_tokens(self):
+        from allauth.core.internal.deferred import jwt
+
+        self.assertTrue(callable(jwt.decode))
+
+    def test_new_google_user_joins_staff(self):
+        request = RequestFactory().get("/accounts/google/login/callback/")
+        SessionMiddleware(lambda req: None).process_request(request)
+        request.session.save()
+        user = get_user_model()(email="reader@gmail.com")
+        sociallogin = SocialLogin(
+            user=user,
+            account=SocialAccount(provider="google", uid="google-reader"),
+        )
+
+        saved = StaffSocialAccountAdapter().save_user(request, sociallogin)
+
+        self.assertTrue(saved.is_staff)
+        self.assertFalse(saved.is_superuser)
+        self.assertFalse(saved.has_usable_password())
+        self.assertTrue(saved.groups.filter(name="Staff").exists())
+        self.assertFalse(saved.groups.filter(name="Admin").exists())
