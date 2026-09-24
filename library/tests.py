@@ -1,5 +1,7 @@
 from datetime import timedelta
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
@@ -107,3 +109,53 @@ class LendingRuleTests(TestCase):
 
         self.assertFalse(overdue.is_overdue)
         self.assertEqual(overdue.status, "returned")
+
+
+class StaffLoanAdminTests(TestCase):
+    def setUp(self):
+        today = timezone.localdate()
+        author = Author.objects.create(name="Ada Lovelace")
+        self.book = Book.objects.create(title="The Book", copies=1)
+        self.book.authors.add(author)
+        member = Member.objects.create(name="Ada", email="ada@exlibris.test", joined_on=today)
+        self.loan = Loan.objects.create(
+            book=self.book,
+            member=member,
+            borrowed_on=today - timedelta(days=2),
+            due_on=today + timedelta(days=7),
+        )
+        self.staff = get_user_model().objects.create_user(
+            "staff",
+            "staff@exlibris.test",
+            "password",
+            is_staff=True,
+        )
+        self.staff.groups.add(Group.objects.get(name="Staff"))
+
+    def test_staff_sees_a_read_only_loan_page(self):
+        self.client.force_login(self.staff)
+
+        loan_list = self.client.get("/admin/library/loan/")
+        loan_page = self.client.get(f"/admin/library/loan/{self.loan.pk}/change/")
+
+        self.assertEqual(loan_list.status_code, 200)
+        self.assertNotContains(loan_list, "Mark selected loans returned")
+        self.assertNotContains(loan_list, "addlink")
+        self.assertContains(loan_page, "View loan")
+        self.assertNotContains(loan_page, 'name="due_on"')
+        self.assertNotContains(loan_page, 'name="_save"')
+
+        self.client.post(
+            "/admin/library/loan/",
+            {"action": "mark_selected_returned", "_selected_action": [self.loan.pk]},
+        )
+        self.loan.refresh_from_db()
+        self.assertIsNone(self.loan.returned_at)
+
+    def test_admin_still_sees_the_bulk_return_action(self):
+        admin = get_user_model().objects.create_superuser("librarian", "librarian@exlibris.test", "password")
+        self.client.force_login(admin)
+
+        loan_list = self.client.get("/admin/library/loan/")
+
+        self.assertContains(loan_list, "Mark selected loans returned")
