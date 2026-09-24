@@ -1,4 +1,5 @@
-from django.db import models
+from django.core.exceptions import ValidationError
+from django.db import connection, models, transaction
 
 
 class Author(models.Model):
@@ -34,7 +35,10 @@ class Book(models.Model):
     )
     copies = models.PositiveIntegerField(
         default=1,
-        help_text="How many physical copies the library owns, including copies that are currently on loan.",
+        help_text=(
+            "How many physical copies the library owns, including copies that are currently on loan. "
+            "A new loan is refused when every copy is already out."
+        ),
     )
     cover = models.ImageField(
         upload_to="covers/",
@@ -76,6 +80,8 @@ class Member(models.Model):
 
 
 class Loan(models.Model):
+    MEMBER_OPEN_LOAN_LIMIT = 5
+
     book = models.ForeignKey(
         Book,
         on_delete=models.PROTECT,
@@ -86,7 +92,10 @@ class Loan(models.Model):
         Member,
         on_delete=models.PROTECT,
         related_name="loans",
-        help_text="The member who has the book. A member with loans cannot be deleted.",
+        help_text=(
+            "The member who has the book. A member with loans cannot be deleted. "
+            f"A member can have at most {MEMBER_OPEN_LOAN_LIMIT} open loans."
+        ),
     )
     borrowed_on = models.DateField(
         help_text="The day the member took the book.",
@@ -114,3 +123,44 @@ class Loan(models.Model):
 
     def __str__(self):
         return f"{self.book} — {self.member}"
+
+    def clean(self):
+        super().clean()
+        if self.returned_at is not None:
+            return
+        errors = {}
+        if self.book_id and self._other_open_for_book() >= self.book.copies:
+            errors["book"] = f"All {self.book.copies} copies are already on loan."
+        if self.member_id and self._other_open_for_member() >= self.MEMBER_OPEN_LOAN_LIMIT:
+            errors["member"] = (
+                f"This member already has {self.MEMBER_OPEN_LOAN_LIMIT} open loans."
+            )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        with transaction.atomic():
+            if self.returned_at is None:
+                self._lock_parties()
+            self.full_clean()
+            return super().save(*args, **kwargs)
+
+    def _other_open_for_book(self):
+        return self._other_open_loans().filter(book_id=self.book_id).count()
+
+    def _other_open_for_member(self):
+        return self._other_open_loans().filter(member_id=self.member_id).count()
+
+    def _other_open_loans(self):
+        loans = Loan.objects.filter(returned_at__isnull=True)
+        if self.pk:
+            loans = loans.exclude(pk=self.pk)
+        return loans
+
+    def _lock_parties(self):
+        if not connection.features.has_select_for_update:
+            return
+        if self.book_id:
+            Book.objects.select_for_update().get(pk=self.book_id)
+        if self.member_id:
+            Member.objects.select_for_update().get(pk=self.member_id)
