@@ -41,6 +41,36 @@ class OverdueFilter(admin.SimpleListFilter):
         return queryset
 
 
+class LoanOnBookInline(admin.TabularInline):
+    model = Loan
+    fk_name = "book"
+    extra = 0
+    fields = ("member", "borrowed_on", "due_on", "returned_at", "status_label")
+    readonly_fields = ("status_label",)
+    autocomplete_fields = ("member",)
+
+    @admin.display(description="Status")
+    def status_label(self, loan):
+        if not loan.pk:
+            return "—"
+        return loan.status
+
+
+class LoanOnMemberInline(admin.TabularInline):
+    model = Loan
+    fk_name = "member"
+    extra = 0
+    fields = ("book", "borrowed_on", "due_on", "returned_at", "status_label")
+    readonly_fields = ("status_label",)
+    autocomplete_fields = ("book",)
+
+    @admin.display(description="Status")
+    def status_label(self, loan):
+        if not loan.pk:
+            return "—"
+        return loan.status
+
+
 @admin.register(Author)
 class AuthorAdmin(admin.ModelAdmin):
     search_fields = ("name",)
@@ -53,6 +83,7 @@ class BookAdmin(admin.ModelAdmin):
     list_filter = ("authors",)
     search_fields = ("title", "authors__name", "isbn")
     filter_horizontal = ("authors",)
+    inlines = (LoanOnBookInline,)
 
     def get_queryset(self, request):
         return super().get_queryset(request).prefetch_related("authors")
@@ -66,6 +97,7 @@ class BookAdmin(admin.ModelAdmin):
 class MemberAdmin(admin.ModelAdmin):
     list_display = ("name", "email", "joined_on")
     search_fields = ("name", "email")
+    inlines = (LoanOnMemberInline,)
 
 
 @admin.register(Loan)
