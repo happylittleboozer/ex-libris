@@ -1,12 +1,21 @@
 from datetime import timedelta
+from io import BytesIO
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.utils import timezone
+from PIL import Image
 
-from library.models import Author, Book, Loan, Member
+from library.models import COVER_MAX_BYTES, Author, Book, Loan, Member
+
+
+def cover_upload(image_format, name):
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, format=image_format)
+    return SimpleUploadedFile(name, buffer.getvalue())
 
 
 class LendingRuleTests(TestCase):
@@ -159,3 +168,88 @@ class StaffLoanAdminTests(TestCase):
         loan_list = self.client.get("/admin/library/loan/")
 
         self.assertContains(loan_list, "Mark selected loans returned")
+
+
+class CoverValidationTests(TestCase):
+    def setUp(self):
+        self.author = Author.objects.create(name="Ada Lovelace")
+        self.librarian = get_user_model().objects.create_superuser(
+            "librarian",
+            "librarian@exlibris.test",
+            "password",
+        )
+
+    def save_book(self, upload, title="The Book"):
+        book = Book(title=title, copies=1)
+        if upload is not None:
+            book.cover = upload
+        book.save()
+        book.authors.add(self.author)
+        return book
+
+    def test_jpeg_png_and_webp_covers_are_stored(self):
+        for image_format, name in (("JPEG", "cover.jpg"), ("PNG", "cover.png"), ("WEBP", "cover.webp")):
+            book = self.save_book(cover_upload(image_format, name), title=name)
+            self.assertTrue(book.cover.name.endswith(name))
+            self.assertGreater(book.cover.size, 0)
+
+    def test_cover_with_the_wrong_extension_is_refused(self):
+        with self.assertRaises(ValidationError) as raised:
+            self.save_book(cover_upload("GIF", "cover.gif"))
+
+        self.assertIn("JPEG, PNG, or WebP", raised.exception.messages[0])
+        self.assertFalse(Book.objects.exists())
+
+    def test_renamed_gif_is_refused(self):
+        with self.assertRaises(ValidationError) as raised:
+            self.save_book(cover_upload("GIF", "cover.jpg"))
+
+        self.assertIn("JPEG, PNG, or WebP", raised.exception.messages[0])
+
+    def test_file_pillow_cannot_read_is_refused(self):
+        upload = SimpleUploadedFile("notes.png", b"not an image")
+
+        with self.assertRaises(ValidationError) as raised:
+            self.save_book(upload)
+
+        self.assertIn("JPEG, PNG, or WebP", raised.exception.messages[0])
+
+    def test_cover_over_2_mb_is_refused(self):
+        upload = SimpleUploadedFile("cover.jpg", b"x" * (COVER_MAX_BYTES + 1))
+
+        with self.assertRaises(ValidationError) as raised:
+            self.save_book(upload)
+
+        self.assertIn("2 MB", raised.exception.messages[0])
+
+    def test_a_book_can_be_saved_without_a_cover(self):
+        book = self.save_book(None)
+
+        self.assertFalse(book.cover)
+
+    def test_admin_rejects_a_gif_and_keeps_the_catalogue(self):
+        self.client.force_login(self.librarian)
+        response = self.client.post(
+            "/admin/library/book/add/",
+            {
+                "title": "Bad cover",
+                "copies": "1",
+                "authors": str(self.author.pk),
+                "isbn": "",
+                "loans-TOTAL_FORMS": "0",
+                "loans-INITIAL_FORMS": "0",
+                "loans-MIN_NUM_FORMS": "0",
+                "loans-MAX_NUM_FORMS": "1000",
+                "cover": cover_upload("GIF", "cover.gif"),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Cover must be a JPEG, PNG, or WebP file.")
+        self.assertFalse(Book.objects.filter(title="Bad cover").exists())
+
+    def test_admin_file_input_offers_jpeg_png_and_webp(self):
+        self.client.force_login(self.librarian)
+        response = self.client.get("/admin/library/book/add/")
+
+        self.assertContains(response, 'accept="image/jpeg,image/png,image/webp"')

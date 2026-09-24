@@ -1,6 +1,36 @@
+from pathlib import Path
+
 from django.core.exceptions import ValidationError
 from django.db import connection, models, transaction
 from django.utils import timezone
+from PIL import Image, UnidentifiedImageError
+
+COVER_MAX_BYTES = 2 * 1024 * 1024
+COVER_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+COVER_FORMATS = {"JPEG", "PNG", "WEBP"}
+
+
+def validate_cover(upload):
+    """Reject a new cover that is not a small JPEG, PNG, or WebP."""
+    if not upload or getattr(upload, "_committed", False):
+        return
+    extension = Path(upload.name or "").suffix.lower().lstrip(".")
+    if extension not in COVER_EXTENSIONS:
+        raise ValidationError("Cover must be a JPEG, PNG, or WebP file.")
+    if upload.size > COVER_MAX_BYTES:
+        raise ValidationError("Cover must be 2 MB or smaller.")
+    file = upload if hasattr(upload, "seek") and hasattr(upload, "read") else upload.file
+    try:
+        file.seek(0)
+        with Image.open(file) as image:
+            image_format = image.format
+            image.verify()
+    except (UnidentifiedImageError, OSError, SyntaxError, ValueError):
+        raise ValidationError("Cover must be a JPEG, PNG, or WebP file.") from None
+    finally:
+        file.seek(0)
+    if image_format not in COVER_FORMATS:
+        raise ValidationError("Cover must be a JPEG, PNG, or WebP file.")
 
 
 class Author(models.Model):
@@ -44,7 +74,8 @@ class Book(models.Model):
     cover = models.ImageField(
         upload_to="covers/",
         blank=True,
-        help_text="A JPEG, PNG, or WebP of the front cover. Used on the book list.",
+        validators=[validate_cover],
+        help_text="A JPEG, PNG, or WebP of the front cover, at most 2 MB. Used on the book list.",
     )
 
     class Meta:
@@ -58,6 +89,11 @@ class Book(models.Model):
 
     def __str__(self):
         return self.title
+
+    def save(self, *args, **kwargs):
+        if self.cover and not self.cover._committed:
+            self.cover.field.run_validators(self.cover)
+        return super().save(*args, **kwargs)
 
 
 class Member(models.Model):

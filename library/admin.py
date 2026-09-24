@@ -85,6 +85,12 @@ class BookAdmin(admin.ModelAdmin):
     filter_horizontal = ("authors",)
     inlines = (LoanOnBookInline,)
 
+    def formfield_for_dbfield(self, db_field, request, **kwargs):
+        formfield = super().formfield_for_dbfield(db_field, request, **kwargs)
+        if db_field.name == "cover" and formfield is not None:
+            formfield.widget.attrs["accept"] = "image/jpeg,image/png,image/webp"
+        return formfield
+
     def get_queryset(self, request):
         return super().get_queryset(request).prefetch_related("authors")
 
