@@ -107,7 +107,23 @@ class LoanAdmin(admin.ModelAdmin):
     search_fields = ("book__title", "book__authors__name", "member__name", "member__email")
     autocomplete_fields = ("book", "member")
     date_hierarchy = "due_on"
+    actions = ("mark_selected_returned",)
 
     @admin.display(description="Status")
     def status_label(self, loan):
         return loan.status
+
+    @admin.action(description="Mark selected loans returned")
+    def mark_selected_returned(self, request, queryset):
+        returned = 0
+        skipped = 0
+        for loan in queryset:
+            if loan.returned_at is not None:
+                skipped += 1
+                continue
+            loan.mark_returned()
+            returned += 1
+        self.message_user(
+            request,
+            f"Marked {returned} loans returned. Skipped {skipped} already returned.",
+        )
