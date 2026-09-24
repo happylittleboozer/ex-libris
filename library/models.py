@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import connection, models, transaction
+from django.utils import timezone
 
 
 class Author(models.Model):
@@ -101,12 +102,18 @@ class Loan(models.Model):
         help_text="The day the member took the book.",
     )
     due_on = models.DateField(
-        help_text="The day the book is expected back. Must be on or after the day it was borrowed.",
+        help_text=(
+            "The day the book is expected back. Must be on or after the day it was borrowed. "
+            "The loan is overdue from the following day if it has not been returned."
+        ),
     )
     returned_at = models.DateTimeField(
         null=True,
         blank=True,
-        help_text="When the book came back. Leave empty while the loan is still open.",
+        help_text=(
+            "When the book came back. Leave empty while the loan is still open. "
+            "A return is recorded once and cannot be changed."
+        ),
     )
 
     class Meta:
@@ -124,8 +131,32 @@ class Loan(models.Model):
     def __str__(self):
         return f"{self.book} — {self.member}"
 
+    @property
+    def is_overdue(self):
+        """True from the day after due_on, until the book is returned."""
+        if self.returned_at is not None or self.due_on is None:
+            return False
+        return self.due_on < timezone.localdate()
+
+    @property
+    def status(self):
+        if self.returned_at is not None:
+            return "returned"
+        if self.is_overdue:
+            return "overdue"
+        return "open"
+
+    def mark_returned(self, when=None):
+        if self.pk is None:
+            raise ValidationError("Save the loan before marking it returned.")
+        if self.returned_at is not None:
+            raise ValidationError({"returned_at": "This loan has already been returned."})
+        self.returned_at = when or timezone.now()
+        self.save()
+
     def clean(self):
         super().clean()
+        self._reject_changed_return()
         if self.returned_at is not None:
             return
         errors = {}
@@ -140,10 +171,19 @@ class Loan(models.Model):
 
     def save(self, *args, **kwargs):
         with transaction.atomic():
+            if self.pk and connection.features.has_select_for_update:
+                Loan.objects.select_for_update().get(pk=self.pk)
             if self.returned_at is None:
                 self._lock_parties()
             self.full_clean()
             return super().save(*args, **kwargs)
+
+    def _reject_changed_return(self):
+        if not self.pk:
+            return
+        previous = Loan.objects.filter(pk=self.pk).values_list("returned_at", flat=True).first()
+        if previous is not None and self.returned_at != previous:
+            raise ValidationError({"returned_at": "This loan has already been returned."})
 
     def _other_open_for_book(self):
         return self._other_open_loans().filter(book_id=self.book_id).count()
