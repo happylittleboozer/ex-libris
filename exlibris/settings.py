@@ -1,5 +1,6 @@
 """Settings for the Ex Libris project."""
 
+import sys
 from pathlib import Path
 
 import environ
@@ -79,6 +80,16 @@ elif DEBUG:
     }
 else:
     raise ImproperlyConfigured("DATABASE_URL is required when DEBUG is off.")
+
+# The pooled Neon host cannot create a separate test database. Lending-rule
+# tests use SQLite so a test run never writes to the dev branch.
+if "test" in sys.argv:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
