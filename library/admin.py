@@ -113,7 +113,7 @@ class LoanAdmin(admin.ModelAdmin):
     def status_label(self, loan):
         return loan.status
 
-    @admin.action(description="Mark selected loans returned")
+    @admin.action(permissions=["change"], description="Mark selected loans returned")
     def mark_selected_returned(self, request, queryset):
         returned = 0
         skipped = 0
