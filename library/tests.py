@@ -1,14 +1,17 @@
 from datetime import timedelta
 from io import BytesIO
 
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 from PIL import Image
 
+from library.assistant import ASSISTANT_UNAVAILABLE, form_notes
 from library.models import COVER_MAX_BYTES, Author, Book, Loan, Member
 
 
@@ -190,7 +193,8 @@ class CoverValidationTests(TestCase):
     def test_jpeg_png_and_webp_covers_are_stored(self):
         for image_format, name in (("JPEG", "cover.jpg"), ("PNG", "cover.png"), ("WEBP", "cover.webp")):
             book = self.save_book(cover_upload(image_format, name), title=name)
-            self.assertTrue(book.cover.name.endswith(name))
+            extension = name.rsplit(".", 1)[1]
+            self.assertTrue(book.cover.name.endswith(f".{extension}"))
             self.assertGreater(book.cover.size, 0)
 
     def test_cover_with_the_wrong_extension_is_refused(self):
@@ -253,3 +257,164 @@ class CoverValidationTests(TestCase):
         response = self.client.get("/admin/library/book/add/")
 
         self.assertContains(response, 'accept="image/jpeg,image/png,image/webp"')
+
+
+class FormAssistantTests(TestCase):
+    def setUp(self):
+        today = timezone.localdate()
+        self.author = Author.objects.create(name="Ada Lovelace")
+        self.book = Book.objects.create(title="The Secret Title", copies=1)
+        self.book.authors.add(self.author)
+        self.member = Member.objects.create(name="Ada", email="ada@exlibris.test", joined_on=today)
+        self.loan = Loan.objects.create(
+            book=self.book,
+            member=self.member,
+            borrowed_on=today,
+            due_on=today + timedelta(days=14),
+        )
+        self.librarian = get_user_model().objects.create_superuser(
+            "librarian",
+            "librarian@exlibris.test",
+            "password",
+        )
+        self.staff = get_user_model().objects.create_user(
+            "staff",
+            "staff@exlibris.test",
+            "password",
+            is_staff=True,
+        )
+        self.staff.groups.add(Group.objects.get(name="Staff"))
+
+    def test_notes_include_help_text_and_leave_out_catalogue_rows(self):
+        book_notes = form_notes(Book)
+        loan_notes = form_notes(Loan)
+
+        self.assertIn("at most 2 MB", book_notes)
+        self.assertNotIn("The Secret Title", book_notes)
+        self.assertIn("5 open loans", loan_notes)
+        self.assertNotIn("ada@exlibris.test", loan_notes)
+
+    def test_book_and_loan_forms_show_the_panel(self):
+        self.client.force_login(self.librarian)
+
+        book_page = self.client.get("/admin/library/book/add/")
+        loan_page = self.client.get(f"/admin/library/loan/{self.loan.pk}/change/")
+        author_page = self.client.get("/admin/library/author/add/")
+
+        self.assertContains(book_page, 'id="form-assistant"')
+        self.assertContains(book_page, 'data-model="book"')
+        self.assertContains(loan_page, 'data-model="loan"')
+        self.assertNotContains(author_page, "form-assistant")
+
+    def test_staff_sees_the_panel_on_a_loan(self):
+        self.client.force_login(self.staff)
+
+        page = self.client.get(f"/admin/library/loan/{self.loan.pk}/change/")
+
+        self.assertContains(page, 'data-model="loan"')
+
+    def test_anonymous_post_is_rejected(self):
+        response = self.client.post(
+            "/admin/assistant/",
+            {"model": "book", "question": "What is a cover?"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_post_without_csrf_is_rejected(self):
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.librarian)
+
+        response = client.post(
+            "/admin/assistant/",
+            {"model": "book", "question": "What is a cover?"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @override_settings(GEMINI_API_KEY="")
+    def test_missing_key_returns_the_fixed_message(self):
+        self.client.force_login(self.staff)
+
+        response = self.client.post(
+            "/admin/assistant/",
+            {"model": "loan", "question": "How many books can a member borrow?"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["answer"], ASSISTANT_UNAVAILABLE)
+
+    @override_settings(GEMINI_API_KEY="test-key")
+    @patch("library.assistant.complete", return_value="A member can have at most 5 open loans.")
+    def test_staff_gets_an_answer_from_the_loan_form(self, complete):
+        self.client.force_login(self.staff)
+
+        response = self.client.post(
+            "/admin/assistant/",
+            {"model": "loan", "question": "How many books can a member borrow?"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["answer"], "A member can have at most 5 open loans.")
+        notes, question = complete.call_args.args
+        self.assertIn("5 open loans", notes)
+        self.assertNotIn("ada@exlibris.test", notes)
+        self.assertEqual(question, "How many books can a member borrow?")
+
+    @override_settings(GEMINI_API_KEY="test-key")
+    @patch("library.assistant.complete", side_effect=TimeoutError)
+    def test_api_failure_returns_the_fixed_message(self, _complete):
+        self.client.force_login(self.librarian)
+
+        response = self.client.post(
+            "/admin/assistant/",
+            {"model": "book", "question": "What is a cover?"},
+        )
+
+        self.assertEqual(response.json()["answer"], ASSISTANT_UNAVAILABLE)
+
+    @override_settings(GEMINI_API_KEY="test-key")
+    @patch("library.assistant.complete")
+    def test_other_forms_are_refused(self, complete):
+        self.client.force_login(self.librarian)
+
+        response = self.client.post(
+            "/admin/assistant/",
+            {"model": "author", "question": "What is a name?"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        complete.assert_not_called()
+
+    def test_question_must_be_short(self):
+        self.client.force_login(self.librarian)
+
+        empty = self.client.post("/admin/assistant/", {"model": "book", "question": "  "})
+        long = self.client.post(
+            "/admin/assistant/",
+            {"model": "book", "question": "x" * 501},
+        )
+
+        self.assertEqual(empty.status_code, 400)
+        self.assertEqual(long.status_code, 400)
+
+    @override_settings(GEMINI_API_KEY="")
+    def test_book_form_saves_when_the_assistant_is_unavailable(self):
+        self.client.force_login(self.librarian)
+
+        response = self.client.post(
+            "/admin/library/book/add/",
+            {
+                "title": "Saved without the assistant",
+                "copies": "1",
+                "authors": str(self.author.pk),
+                "isbn": "",
+                "loans-TOTAL_FORMS": "0",
+                "loans-INITIAL_FORMS": "0",
+                "loans-MIN_NUM_FORMS": "0",
+                "loans-MAX_NUM_FORMS": "1000",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Book.objects.filter(title="Saved without the assistant").exists())

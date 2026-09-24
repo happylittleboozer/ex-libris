@@ -77,8 +77,18 @@ class AuthorAdmin(admin.ModelAdmin):
     list_display = ("name",)
 
 
+class FormAssistantAdmin(admin.ModelAdmin):
+    form_assistant_model = None
+    change_form_template = "admin/assistant_change_form.html"
+
+    def render_change_form(self, request, context, add=False, change=False, form_url="", obj=None):
+        context["form_assistant_model"] = self.form_assistant_model
+        return super().render_change_form(request, context, add, change, form_url, obj)
+
+
 @admin.register(Book)
-class BookAdmin(admin.ModelAdmin):
+class BookAdmin(FormAssistantAdmin):
+    form_assistant_model = "book"
     list_display = ("title", "author_names", "copies")
     list_filter = ("authors",)
     search_fields = ("title", "authors__name", "isbn")
@@ -107,7 +117,8 @@ class MemberAdmin(admin.ModelAdmin):
 
 
 @admin.register(Loan)
-class LoanAdmin(admin.ModelAdmin):
+class LoanAdmin(FormAssistantAdmin):
+    form_assistant_model = "loan"
     list_display = ("book", "member", "borrowed_on", "due_on", "status_label", "returned_at")
     list_filter = (LoanStateFilter, OverdueFilter, "due_on")
     search_fields = ("book__title", "book__authors__name", "member__name", "member__email")

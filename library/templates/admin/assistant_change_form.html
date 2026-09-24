@@ -1,0 +1,44 @@
+{% extends "admin/change_form.html" %}
+
+{% block form_top %}
+<div class="module aligned" id="form-assistant" data-model="{{ form_assistant_model }}">
+  <h2>Form assistant</h2>
+  <p class="help">Ask what a field means or how to fill it in. The answer uses the help text on this form.</p>
+  <div class="form-row">
+    <label for="form-assistant-question">Question:</label>
+    <textarea id="form-assistant-question" rows="3" maxlength="500"></textarea>
+  </div>
+  <button type="button" class="button" id="form-assistant-ask">Ask</button>
+  <p id="form-assistant-answer"></p>
+</div>
+<script>
+(function () {
+  const unavailable = "The assistant is unavailable right now. You can still save this form.";
+  const panel = document.getElementById("form-assistant");
+  const button = document.getElementById("form-assistant-ask");
+  const question = document.getElementById("form-assistant-question");
+  const answer = document.getElementById("form-assistant-answer");
+  button.addEventListener("click", async function () {
+    answer.textContent = "Asking…";
+    button.disabled = true;
+    try {
+      const body = new FormData();
+      body.append("model", panel.dataset.model);
+      body.append("question", question.value);
+      const token = document.querySelector("[name=csrfmiddlewaretoken]").value;
+      const response = await fetch("{% url 'form_assistant' %}", {
+        method: "POST",
+        headers: {"X-CSRFToken": token},
+        body: body,
+      });
+      const payload = await response.json();
+      answer.textContent = payload.answer || unavailable;
+    } catch (error) {
+      answer.textContent = unavailable;
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
+</script>
+{% endblock %}

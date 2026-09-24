@@ -25,6 +25,9 @@ ALLOWED_HOSTS = env.list(
     default=["localhost", "127.0.0.1"] if DEBUG else [],
 )
 
+# An empty key disables the form assistant. The admin form still saves.
+GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
