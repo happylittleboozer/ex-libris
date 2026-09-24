@@ -2,6 +2,8 @@
 
 Staff admin for a lending library. Librarians catalogue books and record loans. Members do not get an account.
 
+The live admin is [https://ex-libris-w346.onrender.com/admin/](https://ex-libris-w346.onrender.com/admin/). The repository is [https://github.com/happylittleboozer/ex-libris](https://github.com/happylittleboozer/ex-libris). There is no page at the site root.
+
 ## Demo logins
 
 | User | Password | What they can do |
@@ -35,6 +37,10 @@ Open http://127.0.0.1:8000/admin/. Put real values in `.env`. That file is not c
 
 Google sign-in needs this redirect on the OAuth client: `http://127.0.0.1:8000/accounts/google/login/callback/`.
 
+## Tests
+
+`python manage.py test` runs the suite on SQLite in memory. It does not write to Neon.
+
 ## Environment
 
 | Name | Where it is set |
@@ -42,19 +48,35 @@ Google sign-in needs this redirect on the OAuth client: `http://127.0.0.1:8000/a
 | `DEBUG` | `true` locally. Render blueprint sets `false`. |
 | `SECRET_KEY` | Required when `DEBUG` is off. Render asks for it. |
 | `DATABASE_URL` | Neon pooled URL. Local `.env` uses the dev branch. Render should use main. |
-| `ALLOWED_HOSTS` | Local default is `localhost,127.0.0.1`. On Render, the service host. |
-| `CSRF_TRUSTED_ORIGINS` | Empty locally. On Render, `https://<service>.onrender.com`. |
+| `ALLOWED_HOSTS` | Local default is `localhost,127.0.0.1`. On Render, `ex-libris-w346.onrender.com`. |
+| `CSRF_TRUSTED_ORIGINS` | Empty locally. On Render, `https://ex-libris-w346.onrender.com`. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_ENDPOINT_URL`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_CUSTOM_DOMAIN` | Cloudflare R2. Covers are public objects. Production refuses to boot if any of these are missing. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Both must be set or the Google button stays hidden. |
 | `GEMINI_API_KEY` | Form assistant. If it is missing or the call fails, the form still saves. |
 
 A session lasts 8 hours. In production the session cookie is HTTPS-only.
 
+## Deploy
+
+Render reads `render.yaml` from `main`. In the dashboard, choose **New → Blueprint** and select this repository. The file defines one free web service. It does not create a database. Postgres stays on Neon.
+
+The free plan rejects a pre-deploy command, so `migrate` runs at the end of the build. Fill every empty environment value before the first deploy. `DATABASE_URL` is the Neon main pooled URL. `SECRET_KEY` is a new random string, kept in Render only. After Render assigns the host, set `ALLOWED_HOSTS` to `ex-libris-w346.onrender.com` and `CSRF_TRUSTED_ORIGINS` to `https://ex-libris-w346.onrender.com`.
+
+Google sign-in on the live site also needs this redirect on the OAuth client: `https://ex-libris-w346.onrender.com/accounts/google/login/callback/`.
+
+The free plan has no shell. Seed production once from your machine, with the main URL overriding `.env`, as in Reseed. Leave that command off the deploy. It deletes the catalogue.
+
 ## Reseed
 
 `python manage.py seed_library` deletes the catalogue and the two demo users, then loads the same set again: 60 authors, 200 books with covers, 120 members, 300 returned loans, 150 open loans, 50 overdue loans. Sign in again afterwards. The password above is unchanged.
 
-On Render, open the service shell and run the same command. That writes to whichever database `DATABASE_URL` points at.
+To reset production, run the same command on your machine with the Neon main URL. That overrides `.env`, which points at the dev branch:
+
+```bash
+DATABASE_URL='neon-main-pooled-url' python manage.py seed_library
+```
+
+The free Render plan has no shell, so this is how production is seeded. The command writes to whichever database that URL names.
 
 ## Why this stack
 
